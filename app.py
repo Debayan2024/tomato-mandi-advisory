@@ -50,23 +50,22 @@ selected_district = st.sidebar.selectbox("Select District", districts, index=dis
 # Planning Mode
 planning_mode = st.sidebar.radio(
     "Choose Planning Mode:",
-    ["🌱 Planting Today (When will I harvest?)", "📅 Target Harvest Date (Where to sell?)"]
+    ["🌱 Sowing Planner (When will I harvest?)", "📅 Harvest Router (Where should I sell?)"]
 )
 
-# Variety Durations
 growth_days = {'Deshi': 70, 'Other': 75, 'Hybrid': 80}
 
-if "Planting Today" in planning_mode:
-    plant_date = st.sidebar.date_input("Transplanting Date (Today)", datetime.today())
+if "Sowing Planner" in planning_mode:
+    plant_date = st.sidebar.date_input("Planned Sowing / Transplanting Date", datetime.today())
     st.sidebar.markdown("""
-    **⏱️ Variety Maturity Timelines:**
+    **⏱️ Days from Transplanting to 1st Harvest:**
     * **Deshi:** 70 Days
     * **Other (General):** 75 Days
     * **Hybrid:** 80 Days
     """)
     mode_type = "forward"
 else:
-    target_harvest_date = st.sidebar.date_input("Target Harvest Date", datetime.today() + timedelta(days=60))
+    target_harvest_date = st.sidebar.date_input("Planned Harvest Date", datetime.today() + timedelta(days=60))
     mode_type = "backward"
 
 truck_load = st.sidebar.number_input("Your Expected Harvest Load (Tonnes)", min_value=0.5, max_value=50.0, value=3.0, step=0.5)
@@ -77,7 +76,7 @@ def recommend(state, district, mode_type, base_date):
     
     if len(mandis) == 0:
         st.warning("No specific mandis found for this district.")
-        return pd.DataFrame(), ""
+        return pd.DataFrame(), "", None
 
     varieties = ['Hybrid', 'Deshi', 'Other']
     rows = []
@@ -92,12 +91,10 @@ def recommend(state, district, mode_type, base_date):
         
         for v in varieties:
             if mode_type == "forward":
-                # User gave plant_date, calculate forward harvest date
                 harvest_dt = pd.to_datetime(base_date) + timedelta(days=growth_days[v])
                 display_date = harvest_dt.strftime('%d-%b-%Y')
                 model_date = harvest_dt
             else:
-                # User gave harvest_date, calculate backward plant date
                 harvest_dt = pd.to_datetime(base_date)
                 plant_dt = harvest_dt - timedelta(days=growth_days[v])
                 display_date = plant_dt.strftime('%d-%b-%Y')
@@ -128,36 +125,45 @@ def recommend(state, district, mode_type, base_date):
     res['Expected Price (₹/q)'] = np.round(model.predict(res[feature_cols]), 2)
     res['Expected Price (₹/kg)'] = np.round(res['Expected Price (₹/q)'] / 100, 2)
     
+    # Check if Mandi can absorb the load
+    res['is_safe_capacity'] = res['Daily Vol (Tonnes)'] >= truck_load
+    
     # Liquidity Badge
     res['Liquidity Status'] = np.where(res['Daily Vol (Tonnes)'] >= 10.0, '🟢 High (Hub)',
                               np.where(res['Daily Vol (Tonnes)'] >= 2.0, '🟡 Medium', '🔴 Low (Risk)'))
     
+    # Selection of TOP PICK: Prioritize Safe Markets first!
+    safe_candidates = res[res['is_safe_capacity']]
+    if not safe_candidates.empty:
+        top_pick = safe_candidates.sort_values('Expected Price (₹/q)', ascending=False).iloc[0]
+    else:
+        # Fallback to highest volume market if all are small
+        top_pick = res.sort_values('Daily Vol (Tonnes)', ascending=False).iloc[0]
+
+    # Sort table: Safe markets on top, then by price
+    res_sorted = res.sort_values(by=['is_safe_capacity', 'Expected Price (₹/q)'], ascending=[False, False]).reset_index(drop=True)
+    
     cols = ['Mandi', 'Variety', 'Expected Price (₹/q)', 'Expected Price (₹/kg)', 'Daily Vol (Tonnes)', 'Liquidity Status', date_col_name]
-    return res[cols].sort_values('Expected Price (₹/q)', ascending=False).reset_index(drop=True), date_col_name
+    return res_sorted[cols], date_col_name, top_pick
 
 # 5. Output UI
 active_date = plant_date if mode_type == "forward" else target_harvest_date
-results, date_col_name = recommend(selected_state, selected_district, mode_type, active_date)
+results, date_col_name, top_pick = recommend(selected_state, selected_district, mode_type, active_date)
 
-if not results.empty:
-    top_pick = results.iloc[0]
-    
+if not results.empty and top_pick is not None:
     # Top KPI Cards
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("🥇 Recommended Mandi", top_pick['Mandi'])
+    col1.metric("🥇 Recommended Safe Mandi", top_pick['Mandi'])
     col2.metric("🍅 Best Variety", top_pick['Variety'])
     col3.metric("💰 Expected Gross Price", f"₹{top_pick['Expected Price (₹/q)']:,} / q", f"₹{top_pick['Expected Price (₹/kg)']}/kg")
     col4.metric(f"📅 {date_col_name}", top_pick[date_col_name])
     
     st.divider()
     
-    # Liquidity Warning
-    if top_pick['Daily Vol (Tonnes)'] < truck_load:
-        st.warning(f"⚠️ High Risk Warning: The top-priced market ({top_pick['Mandi']}) only trades {top_pick['Daily Vol (Tonnes)']} Tonnes daily. Your load is {truck_load} Tonnes. Bringing a large truck might crash prices! Consider a 🟢 High Liquidity Hub.")
-    else:
-        st.success(f"✅ Market Safe: {top_pick['Mandi']} trades {top_pick['Daily Vol (Tonnes)']} Tonnes daily and easily absorbs your {truck_load}-Tonne harvest!")
-        
-    st.info("💡 **Liquidity Status Guide:** 🟢 **High (Hub):** $\ge 10$ Tonnes/day (Instant truckload absorption) | 🟡 **Medium:** 2–10 Tonnes/day | 🔴 **Low (Risk):** $< 2$ Tonnes/day (Only for small local loads).")
+    # Clear Advisory Message
+    st.success(f"✅ **Safe Recommendation:** **{top_pick['Mandi']}** trades **{top_pick['Daily Vol (Tonnes)']} Tonnes daily** and can easily absorb your **{truck_load}-Tonne harvest** without crashing local auction prices!")
+
+    st.info("💡 **How Ranking Works:** Mandis that can safely absorb your truckload are prioritized first. High-risk markets with low volume are pushed to the bottom to protect you from unsold produce.")
 
     tab1, tab2 = st.tabs(["📋 Mandi & Variety Comparison Table", "📊 Visual Price Chart"])
     with tab1:
