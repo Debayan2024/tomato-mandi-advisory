@@ -1,1 +1,0 @@
-# safeplate-hybrid-rag
