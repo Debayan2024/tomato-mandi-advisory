@@ -98,9 +98,9 @@ growth_days = {'Deshi': 70, 'Other': 75, 'Hybrid': 80}
 if "Planting" in planning_mode:
     plant_date = st.sidebar.date_input("When will you plant?", datetime.today())
     
-    # Farmer enters Land and Seeds
+    # Farmer enters Land and Seeds (Clean Grams input)
     acres = st.sidebar.number_input("Your Farm Land Area (in Acres)", min_value=0.25, max_value=50.0, value=1.0, step=0.25)
-    seed_grams = st.sidebar.number_input("Seeds Planted (in Grams / Packets)", min_value=10, max_value=2000, value=50, step=10, help="Standard: 40-50 grams seeds per acre")
+    seed_grams = st.sidebar.number_input("Seeds Planted (in Grams)", min_value=10, max_value=2000, value=50, step=10, help="Standard: 40-50 grams seeds per acre (approx 4-5 packets of 10g each)")
     
     # Expected Harvest Yield Calculation (ICAR Standard: ~22 Tonnes/acre, picked across 5-6 trips)
     total_expected_harvest = round(acres * 22.0, 1)
@@ -126,27 +126,25 @@ def recommend(state, district, mode_type, ref_date, trip_load):
     mandis = geo[(geo['state_name'] == state) & (geo['district_name'] == district)]['market_center_name'].unique()
     if len(mandis) == 0:
         return pd.DataFrame(), "", None
-
-    varieties = ['Hybrid', 'Deshi', 'Other']
-    rows = []
+        
     date_col = "Expected Harvest Date" if mode_type == "forward" else "Recommended Sowing Date"
+    rows = []
     
     for m in mandis:
-        vol = mandi_vol.get(m, 2.0)
-        log_vol = np.log1p(vol)
+        m_vol = mandi_vol.get(m, 10.0)
         m_enc = mandi_means.get(m, train_mean)
         s_enc = state_means.get(state, train_mean)
         
-        for v in varieties:
+        for v in ['Hybrid', 'Deshi', 'Other']:
+            days = growth_days[v]
             if mode_type == "forward":
-                harvest_dt = pd.to_datetime(ref_date) + timedelta(days=growth_days[v])
-                display_date = harvest_dt.strftime('%d-%b-%Y')
+                harvest_dt = ref_date + timedelta(days=days)
+                shown_date_str = harvest_dt.strftime('%d-%b-%Y')
                 model_date = harvest_dt
             else:
-                harvest_dt = pd.to_datetime(ref_date)
-                plant_dt = harvest_dt - timedelta(days=growth_days[v])
-                display_date = plant_dt.strftime('%d-%b-%Y')
-                model_date = harvest_dt
+                sow_dt = ref_date - timedelta(days=days)
+                shown_date_str = sow_dt.strftime('%d-%b-%Y')
+                model_date = ref_date
                 
             week = int(model_date.isocalendar().week)
             month = model_date.month
@@ -154,16 +152,12 @@ def recommend(state, district, mode_type, ref_date, trip_load):
             rows.append({
                 'Mandi': m,
                 'Variety': v,
-                date_col: display_date,
-                'Daily Vol (Tonnes)': round(vol, 1),
+                date_col: shown_date_str,
+                'Daily Vol (Tonnes)': round(m_vol, 1),
                 'mandi_encoded': m_enc,
                 'state_encoded': s_enc,
-                'log_arrival': log_vol,
-                'mandi_arrival_interact': m_enc * log_vol,
-                'sin_week': np.sin(2 * np.pi * week / 52),
-                'cos_week': np.cos(2 * np.pi * week / 52),
-                'sin_month': np.sin(2 * np.pi * month / 12),
-                'cos_month': np.cos(2 * np.pi * month / 12),
+                'arrival_week': week,
+                'arrival_month': month,
                 'variety_Deshi': int(v == 'Deshi'),
                 'variety_Hybrid': int(v == 'Hybrid'),
                 'variety_Other': int(v == 'Other')
