@@ -27,10 +27,10 @@ try:
     train_mean = artifacts['train_mean']
     geo = artifacts['geo']
 except Exception as e:
-    st.error(f"Error loading artifacts: {e}. Please ensure 'tomato_artifacts.joblib' is placed in this folder.")
+    st.error(f"Error loading artifacts: {e}. Please ensure 'tomato_artifacts.joblib' is in the root directory.")
     st.stop()
 
-# 2. Automatically Read API Key from Streamlit Secrets
+# 2. API Key from Streamlit Secrets
 api_key = st.secrets.get("DATA_GOV_API_KEY", "")
 
 # Live APMC Data Fetcher via data.gov.in API
@@ -65,7 +65,13 @@ st.markdown("Empowering Indian tomato farmers with AI-driven harvest timing, des
 st.divider()
 
 # 4. Sidebar: Farmer Inputs
-st.sidebar.header("📍 Farmer Location & Farm Load")
+st.sidebar.header("📍 Farmer Location & Inputs")
+
+# Live API Status Badge in Sidebar
+if api_key:
+    st.sidebar.success("🟢 Government Live API Connected")
+else:
+    st.sidebar.info("⚪ Running on Offline AI Model")
 
 # State & District Selection
 states = sorted(geo['state_name'].unique().tolist())
@@ -76,58 +82,13 @@ districts = sorted(geo[geo['state_name'] == selected_state]['district_name'].uni
 default_district = "Nashik" if "Nashik" in districts else districts[0]
 selected_district = st.sidebar.selectbox("Select District", districts, index=districts.index(default_district))
 
-# --- REAL-WORLD FARM CALCULATOR (Zero Assumptions) ---
-st.sidebar.subheader("🚜 How much are you taking to the Mandi?")
-load_mode = st.sidebar.radio(
-    "Choose how you want to measure your load:",
-    [
-        "📦 By Crates (प्लास्टिक क्रेट्स - 25 kg each)",
-        "🛻 By Vehicle Type (गाड़ी का प्रकार)",
-        "📐 By Land Area (Acres)",
-        "⚖️ Direct Tonnes"
-    ]
-)
-
-if "Crates" in load_mode:
-    crates = st.sidebar.number_input("Number of Crates (25 kg each)", min_value=10, max_value=2000, value=100, step=10)
-    truck_load = round((crates * 25) / 1000, 2)
-    st.sidebar.caption(f"💡 **{crates} Crates = {truck_load} Tonnes**")
-
-elif "Vehicle" in load_mode:
-    vehicle = st.sidebar.selectbox(
-        "Select Vehicle",
-        [
-            "Tata Ace / Small Tempo (~1.0 Tonne / ~40 crates)",
-            "Bolero Pickup / Dost (~2.5 Tonnes / ~100 crates)",
-            "Tractor Trolley (~4.0 Tonnes / ~160 crates)",
-            "Large 6-Wheeler Truck (~9.0 Tonnes / ~360 crates)"
-        ]
-    )
-    if "Tata Ace" in vehicle:
-        truck_load = 1.0
-    elif "Bolero" in vehicle:
-        truck_load = 2.5
-    elif "Tractor" in vehicle:
-        truck_load = 4.0
-    else:
-        truck_load = 9.0
-    st.sidebar.caption(f"💡 Vehicle capacity: **~{truck_load} Tonnes**")
-
-elif "Land Area" in load_mode:
-    acres = st.sidebar.number_input("Land Area (in Acres)", min_value=0.25, max_value=20.0, value=1.0, step=0.25)
-    truck_load = round(acres * 2.5, 1)
-    st.sidebar.caption(f"💡 Estimated load for one market trip: **~{truck_load} Tonnes**")
-
-else:
-    truck_load = st.sidebar.number_input("Enter Tonnes directly", min_value=0.5, max_value=50.0, value=2.5, step=0.5)
-
 st.sidebar.divider()
 
-# Simple Language Selector
+# Simple Mode Selector
 planning_mode = st.sidebar.radio(
     "Choose What You Want To Do:",
     [
-        "🌱 I am Planting (When will I harvest?)", 
+        "🌱 I am Planting (Tell me when & where to sell)",
         "🧺 My Crop is Ready (Where should I sell?)"
     ]
 )
@@ -135,18 +96,33 @@ planning_mode = st.sidebar.radio(
 growth_days = {'Deshi': 70, 'Other': 75, 'Hybrid': 80}
 
 if "Planting" in planning_mode:
-    base_date = st.sidebar.date_input("When are you planting?", datetime.today())
-    st.sidebar.markdown("""
-    **⏱️ Days to First Picking:**
-    * **Deshi:** 70 Days | **Other:** 75 Days | **Hybrid:** 80 Days
-    """)
+    plant_date = st.sidebar.date_input("When will you plant?", datetime.today())
+    
+    # Farmer enters Land and Seeds
+    acres = st.sidebar.number_input("Your Farm Land Area (in Acres)", min_value=0.25, max_value=50.0, value=1.0, step=0.25)
+    seed_grams = st.sidebar.number_input("Seeds Planted (in Grams / Packets)", min_value=10, max_value=2000, value=50, step=10, help="Standard: 40-50 grams seeds per acre")
+    
+    # Expected Harvest Yield Calculation (ICAR Standard: ~22 Tonnes/acre, picked across 5-6 trips)
+    total_expected_harvest = round(acres * 22.0, 1)
+    single_trip_load = round(total_expected_harvest / 5.5, 1) # per-trip load to mandi
+    
+    st.sidebar.caption(f"🌾 **Expected Total Harvest:** ~{total_expected_harvest} Tonnes  \n*(~{single_trip_load} Tonnes per mandi trip)*")
+    
     mode_type = "forward"
-else:
-    base_date = st.sidebar.date_input("When will you harvest?", datetime.today() + timedelta(days=60))
-    mode_type = "backward"
+    active_date = plant_date
+    load_to_check = single_trip_load
 
-# 5. Core Recommendation Function
-def recommend(state, district, mode_type, ref_date):
+else:
+    target_harvest_date = st.sidebar.date_input("When will you harvest?", datetime.today() + timedelta(days=60))
+    single_trip_load = st.sidebar.number_input("Your Harvest Load for this trip (Tonnes)", min_value=0.5, max_value=50.0, value=3.0, step=0.5)
+    
+    total_expected_harvest = single_trip_load
+    mode_type = "backward"
+    active_date = target_harvest_date
+    load_to_check = single_trip_load
+
+# 5. Core Recommendation Engine
+def recommend(state, district, mode_type, ref_date, trip_load):
     mandis = geo[(geo['state_name'] == state) & (geo['district_name'] == district)]['market_center_name'].unique()
     if len(mandis) == 0:
         return pd.DataFrame(), "", None
@@ -196,11 +172,13 @@ def recommend(state, district, mode_type, ref_date):
     res = pd.DataFrame(rows)
     res['Expected Price (₹/q)'] = np.round(model.predict(res[feature_cols]), 2)
     res['Expected Price (₹/kg)'] = np.round(res['Expected Price (₹/q)'] / 100, 2)
-    res['is_safe_capacity'] = res['Daily Vol (Tonnes)'] >= truck_load
+    
+    # Check if Mandi can absorb this trip load
+    res['is_safe_capacity'] = res['Daily Vol (Tonnes)'] >= trip_load
     res['Liquidity Status'] = np.where(res['Daily Vol (Tonnes)'] >= 10.0, '🟢 High (Hub)',
                               np.where(res['Daily Vol (Tonnes)'] >= 2.0, '🟡 Medium', '🔴 Low (Risk)'))
     
-    # Safe markets prioritized
+    # Pick Top Safe Mandi with Highest Price
     safe_candidates = res[res['is_safe_capacity']]
     top_pick = safe_candidates.sort_values('Expected Price (₹/q)', ascending=False).iloc[0] if not safe_candidates.empty else res.sort_values('Daily Vol (Tonnes)', ascending=False).iloc[0]
     
@@ -208,43 +186,37 @@ def recommend(state, district, mode_type, ref_date):
     cols = ['Mandi', 'Variety', 'Expected Price (₹/q)', 'Expected Price (₹/kg)', 'Daily Vol (Tonnes)', 'Liquidity Status', date_col]
     return res_sorted[cols], date_col, top_pick
 
-# Optimal Sowing Window Scanner
-def find_optimal_sowing_window(state, district):
-    today = datetime.today()
-    candidate_dates = [today + timedelta(days=7 * i) for i in range(1, 13)]
-    best_option = None
-    max_price = -1
-    
-    for c_date in candidate_dates:
-        df_scan, _, top = recommend(state, district, "forward", c_date)
-        if top is not None and top['Expected Price (₹/q)'] > max_price:
-            max_price = top['Expected Price (₹/q)']
-            best_option = {
-                'plant_date': c_date.strftime('%d-%b-%Y'),
-                'harvest_date': top['Expected Harvest Date'],
-                'mandi': top['Mandi'],
-                'variety': top['Variety'],
-                'price_q': top['Expected Price (₹/q)'],
-                'price_kg': top['Expected Price (₹/kg)']
-            }
-    return best_option
-
 # 6. Render UI
-optimal_window = find_optimal_sowing_window(selected_state, selected_district)
-if optimal_window:
-    st.markdown(f"""
-    <div style="background-color: #1e3a2f; padding: 15px; border-radius: 10px; border-left: 6px solid #28a745; margin-bottom: 20px;">
-        <h4 style="margin: 0; color: #a3e635;">🏆 Best Planting Window for Maximum Profit (Next 3 Months)</h4>
-        <p style="margin: 5px 0 0 0; font-size: 16px; color: #ffffff;">
-            If you plant on <b>{optimal_window['plant_date']}</b>, you will harvest around <b>{optimal_window['harvest_date']}</b> to catch the peak price at <b>{optimal_window['mandi']}</b> for <b>{optimal_window['variety']}</b> at an estimated <b>₹{optimal_window['price_q']:,} / quintal (₹{optimal_window['price_kg']}/kg)</b>!
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-
-# Main Recommendation Results
-results, date_col_name, top_pick = recommend(selected_state, selected_district, mode_type, base_date)
+results, date_col_name, top_pick = recommend(selected_state, selected_district, mode_type, active_date, load_to_check)
 
 if not results.empty and top_pick is not None:
+    
+    # --- PROMINENT DIRECT STORY CARD ---
+    if mode_type == "forward":
+        st.markdown(f"""
+        <div style="background-color: #1e3a2f; padding: 18px; border-radius: 10px; border-left: 6px solid #28a745; margin-bottom: 25px;">
+            <h3 style="margin: 0; color: #a3e635;">🏆 Your Optimal Harvest & Profit Recommendation</h3>
+            <p style="margin: 8px 0 0 0; font-size: 17px; color: #ffffff; line-height: 1.6;">
+                For your <b>{acres} Acre</b> land (with <b>{seed_grams}g seeds</b>), your expected tomato harvest will be <b>~{total_expected_harvest} Tonnes</b>.<br>
+                If you plant <b>{top_pick['Variety']}</b> on <b>{pd.to_datetime(plant_date).strftime('%d-%b-%Y')}</b>, you will harvest around <b>{top_pick[date_col_name]}</b>.<br>
+                If you sell at <b>{top_pick['Mandi']}</b> (trades <b>{top_pick['Daily Vol (Tonnes)']} Tonnes/day</b>, safe for your volume), you will get the maximum expected gross price of: <br>
+                <span style="font-size: 22px; color: #facc15; font-weight: bold;">₹{top_pick['Expected Price (₹/q)']:,} / quintal (₹{top_pick['Expected Price (₹/kg)']}/kg)</span>
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+        <div style="background-color: #1e3a2f; padding: 18px; border-radius: 10px; border-left: 6px solid #28a745; margin-bottom: 25px;">
+            <h3 style="margin: 0; color: #a3e635;">🏆 Best Mandi for Your Harvest</h3>
+            <p style="margin: 8px 0 0 0; font-size: 17px; color: #ffffff; line-height: 1.6;">
+                For your harvest around <b>{pd.to_datetime(target_harvest_date).strftime('%d-%b-%Y')}</b> (load: <b>{single_trip_load} Tonnes</b>):<br>
+                Sell at <b>{top_pick['Mandi']}</b> for variety <b>{top_pick['Variety']}</b> to earn the highest price of: <br>
+                <span style="font-size: 22px; color: #facc15; font-weight: bold;">₹{top_pick['Expected Price (₹/q)']:,} / quintal (₹{top_pick['Expected Price (₹/kg)']}/kg)</span>
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Top KPI Metrics
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.markdown(f"**🥇 Recommended Mandi**  \n### {top_pick['Mandi']}")
@@ -257,7 +229,7 @@ if not results.empty and top_pick is not None:
     
     st.divider()
 
-    # Live APMC Data Check
+    # Live APMC Data if Available
     if api_key:
         live_data = fetch_live_mandi_prices(api_key, selected_state, selected_district)
         if live_data is not None and not live_data.empty:
@@ -265,6 +237,7 @@ if not results.empty and top_pick is not None:
             st.dataframe(live_data, use_container_width=True)
             st.divider()
 
+    # Comparison Table & Chart
     tab1, tab2 = st.tabs(["📋 Mandi & Variety Comparison Table", "📊 Visual Price Chart"])
     with tab1:
         st.dataframe(results, use_container_width=True)
