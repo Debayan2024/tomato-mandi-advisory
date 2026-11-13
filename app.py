@@ -121,7 +121,7 @@ else:
     active_date = target_harvest_date
     load_to_check = single_trip_load
 
-# 5. Core Recommendation Engine
+# 5. Core Recommendation Engine (All Features Restored)
 def recommend(state, district, mode_type, ref_date, trip_load):
     mandis = geo[(geo['state_name'] == state) & (geo['district_name'] == district)]['market_center_name'].unique()
     if len(mandis) == 0:
@@ -131,20 +131,22 @@ def recommend(state, district, mode_type, ref_date, trip_load):
     rows = []
     
     for m in mandis:
-        m_vol = mandi_vol.get(m, 10.0)
+        vol = mandi_vol.get(m, 10.0)
+        log_vol = np.log1p(vol)
         m_enc = mandi_means.get(m, train_mean)
         s_enc = state_means.get(state, train_mean)
         
         for v in ['Hybrid', 'Deshi', 'Other']:
             days = growth_days[v]
             if mode_type == "forward":
-                harvest_dt = ref_date + timedelta(days=days)
+                harvest_dt = pd.to_datetime(ref_date) + timedelta(days=days)
                 shown_date_str = harvest_dt.strftime('%d-%b-%Y')
                 model_date = harvest_dt
             else:
-                sow_dt = ref_date - timedelta(days=days)
+                harvest_dt = pd.to_datetime(ref_date)
+                sow_dt = harvest_dt - timedelta(days=days)
                 shown_date_str = sow_dt.strftime('%d-%b-%Y')
-                model_date = ref_date
+                model_date = harvest_dt
                 
             week = int(model_date.isocalendar().week)
             month = model_date.month
@@ -153,11 +155,15 @@ def recommend(state, district, mode_type, ref_date, trip_load):
                 'Mandi': m,
                 'Variety': v,
                 date_col: shown_date_str,
-                'Daily Vol (Tonnes)': round(m_vol, 1),
+                'Daily Vol (Tonnes)': round(vol, 1),
                 'mandi_encoded': m_enc,
                 'state_encoded': s_enc,
-                'arrival_week': week,
-                'arrival_month': month,
+                'log_arrival': log_vol,
+                'mandi_arrival_interact': m_enc * log_vol,
+                'sin_week': np.sin(2 * np.pi * week / 52),
+                'cos_week': np.cos(2 * np.pi * week / 52),
+                'sin_month': np.sin(2 * np.pi * month / 12),
+                'cos_month': np.cos(2 * np.pi * month / 12),
                 'variety_Deshi': int(v == 'Deshi'),
                 'variety_Hybrid': int(v == 'Hybrid'),
                 'variety_Other': int(v == 'Other')
