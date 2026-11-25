@@ -57,7 +57,7 @@ def fetch_live_mandi_prices(key, state, district):
             "filters[commodity]": "Tomato",
             "limit": 10
         }
-        resp = requests.get(url, params=params, timeout=10)
+        resp = requests.get(url, params=params, timeout=(3, 6))
         if resp.status_code != 200:
             return None, f"API replied HTTP {resp.status_code}"
         records = resp.json().get('records', [])
@@ -116,10 +116,7 @@ st.divider()
 st.sidebar.header("📍 Farmer Location & Inputs")
 
 # Live API Status Badge in Sidebar
-if api_key:
-    st.sidebar.success("🟢 Government Live API Connected")
-else:
-    st.sidebar.info("⚪ Running on Offline AI Model")
+api_badge = st.sidebar.empty()   # filled below, after we really try the live API
 
 # State & District Selection
 states = sorted(geo['state_name'].unique().tolist())
@@ -130,13 +127,22 @@ districts = sorted(geo[geo['state_name'] == selected_state]['district_name'].uni
 default_district = "Nashik" if "Nashik" in districts else districts[0]
 selected_district = st.sidebar.selectbox("Select District", districts, index=districts.index(default_district))
 
+# Try the live government feed once (cached for 1 hour); badge shows the REAL status
+live_data = None
+if api_key:
+    live_data, _ = fetch_live_mandi_prices(api_key, selected_state, selected_district)
+if live_data is not None and not live_data.empty:
+    api_badge.success("🟢 Government Live API Connected")
+else:
+    api_badge.info("⚪ Running on Offline AI Model")
+
 st.sidebar.divider()
 
 st.sidebar.markdown(f"📅 **Today:** {today.strftime('%d-%b-%Y')}  \n🌱 **Planting window:** {plant_start.strftime('%d-%b')} to {plant_end.strftime('%d-%b-%Y')}")
 
 # Farmer enters Land (Acres) and Seeds (Grams)
 acres = st.sidebar.number_input("Your Farm Land Area (in Acres)", min_value=0.25, max_value=50.0, value=1.00, step=0.01, format="%.2f")
-seed_grams = st.sidebar.number_input("Seeds Planted (in Grams)", min_value=10, max_value=2000, value=50, step=10, help="Standard: 40-50 grams seeds per acre (approx 4-5 packets of 10g each)")
+seed_grams = st.sidebar.number_input("Seeds Planted (in Grams)", min_value=10, max_value=2000, value=50, step=1, help="Standard: 40-50 grams seeds per acre (approx 4-5 packets of 10g each)")
 
 # Expected Harvest (in Tonnes) from Land + Seeds:
 # seeds decide how much land can actually be planted (50 g per acre); extra seeds do not add yield
@@ -275,14 +281,11 @@ else:
 
     st.divider()
 
-    # Live APMC Data if Available (shown only when the feed actually returns auctions)
-    live_msg = "No API key set"
-    if api_key:
-        live_data, live_msg = fetch_live_mandi_prices(api_key, selected_state, selected_district)
-        if live_data is not None and not live_data.empty:
-            st.success("🟢 Connected to Live Agmarknet Government Feed (Today's Real Mandi Auctions)")
-            st.dataframe(live_data, use_container_width=True)
-            st.divider()
+    # Live APMC Data (shown only when the feed really returns auctions)
+    if live_data is not None and not live_data.empty:
+        st.success("🟢 Connected to Live Agmarknet Government Feed (Today's Real Mandi Auctions)")
+        st.dataframe(live_data, use_container_width=True)
+        st.divider()
 
     # Comparison Table & Chart: best planting date for every mandi x variety
     best_rows = res_all.loc[res_all.groupby(['Mandi', 'Variety'])['price_q'].idxmax()].copy()
@@ -297,6 +300,3 @@ else:
         st.dataframe(best_rows[table_cols], use_container_width=True)
     with tab2:
         st.bar_chart(data=best_rows, x="Mandi", y="Expected Price (₹/kg)", color="Variety")
-
-with st.expander("🔧 Live feed status (for debugging)", expanded=False):
-    st.write(live_msg if not res_all.empty else "No mandi data for this district.")
