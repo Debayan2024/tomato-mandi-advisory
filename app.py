@@ -44,8 +44,9 @@ except Exception:
 # Live APMC Data Fetcher via data.gov.in API
 @st.cache_data(ttl=3600)
 def fetch_live_mandi_prices(key, state, district):
+    """Returns (dataframe or None, short status text for the diagnostics box)."""
     if not key:
-        return None
+        return None, "No API key set"
     try:
         url = "https://api.data.gov.in/resource/9ef84268-d588-465a-a308-a864a43d0070"
         params = {
@@ -56,17 +57,18 @@ def fetch_live_mandi_prices(key, state, district):
             "filters[commodity]": "Tomato",
             "limit": 10
         }
-        resp = requests.get(url, params=params, timeout=5)
-        if resp.status_code == 200:
-            records = resp.json().get('records', [])
-            if records:
-                live_df = pd.DataFrame(records)[['market', 'variety', 'modal_price', 'arrival_date']]
-                live_df['modal_price'] = (pd.to_numeric(live_df['modal_price'], errors='coerce') / 100).round(2)
-                live_df.columns = ['Mandi', 'Variety', 'Today Live Price (₹/kg)', 'Auction Date']
-                return live_df
-    except Exception:
-        return None
-    return None
+        resp = requests.get(url, params=params, timeout=10)
+        if resp.status_code != 200:
+            return None, f"API replied HTTP {resp.status_code}"
+        records = resp.json().get('records', [])
+        if not records:
+            return None, f"API connected (HTTP 200) but returned 0 tomato records for {district}, {state} today"
+        live_df = pd.DataFrame(records)[['market', 'variety', 'modal_price', 'arrival_date']]
+        live_df['modal_price'] = (pd.to_numeric(live_df['modal_price'], errors='coerce') / 100).round(2)
+        live_df.columns = ['Mandi', 'Variety', 'Today Live Price (₹/kg)', 'Auction Date']
+        return live_df, f"OK, {len(live_df)} records"
+    except Exception as e:
+        return None, f"Request failed: {type(e).__name__}"
 
 # Today's date (India time, fetched automatically)
 def get_today():
@@ -133,7 +135,7 @@ st.sidebar.divider()
 st.sidebar.markdown(f"📅 **Today:** {today.strftime('%d-%b-%Y')}  \n🌱 **Planting window:** {plant_start.strftime('%d-%b')} to {plant_end.strftime('%d-%b-%Y')}")
 
 # Farmer enters Land (Acres) and Seeds (Grams)
-acres = st.sidebar.number_input("Your Farm Land Area (in Acres)", min_value=0.25, max_value=50.0, value=1.0, step=0.25)
+acres = st.sidebar.number_input("Your Farm Land Area (in Acres)", min_value=0.25, max_value=50.0, value=1.00, step=0.01, format="%.2f")
 seed_grams = st.sidebar.number_input("Seeds Planted (in Grams)", min_value=10, max_value=2000, value=50, step=10, help="Standard: 40-50 grams seeds per acre (approx 4-5 packets of 10g each)")
 
 # Expected Harvest (in Tonnes) from Land + Seeds:
@@ -273,15 +275,13 @@ else:
 
     st.divider()
 
-    # Live APMC Data if Available
+    # Live APMC Data if Available (shown only when the feed actually returns auctions)
+    live_msg = "No API key set"
     if api_key:
-        live_data = fetch_live_mandi_prices(api_key, selected_state, selected_district)
+        live_data, live_msg = fetch_live_mandi_prices(api_key, selected_state, selected_district)
         if live_data is not None and not live_data.empty:
             st.success("🟢 Connected to Live Agmarknet Government Feed (Today's Real Mandi Auctions)")
             st.dataframe(live_data, use_container_width=True)
-            st.divider()
-        else:
-            st.info("ℹ️ Live Agmarknet feed returned no tomato auctions for this district today (or the service is slow). Showing AI model predictions only.")
             st.divider()
 
     # Comparison Table & Chart: best planting date for every mandi x variety
@@ -297,3 +297,6 @@ else:
         st.dataframe(best_rows[table_cols], use_container_width=True)
     with tab2:
         st.bar_chart(data=best_rows, x="Mandi", y="Expected Price (₹/kg)", color="Variety")
+
+with st.expander("🔧 Live feed status (for debugging)", expanded=False):
+    st.write(live_msg if not res_all.empty else "No mandi data for this district.")
