@@ -82,10 +82,14 @@ today = get_today()
 # Constants
 growth_days = {'Deshi': 70, 'Other': 75, 'Hybrid': 80}
 VARIETIES = ['Hybrid', 'Deshi', 'Other']
-SCAN_DAYS = 30             # we search for the best planting date inside the nearest 30 days from today
+SCAN_DAYS = 30             # 30-day planting window: starts TOMORROW (planting today is not possible)
 YIELD_TONNES_PER_ACRE = 22.0     # expected harvest per acre (Tonnes)
 SEED_GRAMS_PER_ACRE = 50.0       # standard seed need: 40-50 g per acre (50 g used)
 TRIPS = 5.5                # harvest is picked across ~5-6 trips
+
+# Planting window: tomorrow ... tomorrow + 29 days (30 days in total)
+plant_start = today + timedelta(days=1)
+plant_end = plant_start + timedelta(days=SCAN_DAYS - 1)
 
 # Indian-style number format (12,34,567)
 def inr(n):
@@ -126,7 +130,7 @@ selected_district = st.sidebar.selectbox("Select District", districts, index=dis
 
 st.sidebar.divider()
 
-st.sidebar.markdown(f"📅 **Today:** {today.strftime('%d-%b-%Y')}")
+st.sidebar.markdown(f"📅 **Today:** {today.strftime('%d-%b-%Y')}  \n🌱 **Planting window:** {plant_start.strftime('%d-%b')} to {plant_end.strftime('%d-%b-%Y')}")
 
 # Farmer enters Land (Acres) and Seeds (Grams)
 acres = st.sidebar.number_input("Your Farm Land Area (in Acres)", min_value=0.25, max_value=50.0, value=1.0, step=0.25)
@@ -146,7 +150,7 @@ elif acres_coverable_by_seeds > acres * 1.2:
 
 st.sidebar.caption(f"🌾 **Expected Total Harvest:** ~{total_expected_tonnes} Tonnes  \n*(~{single_trip_tonnes} Tonnes per mandi trip)*")
 
-# 5. Core Recommendation Engine: scans every planting date from today
+# 5. Core Recommendation Engine: scans every planting date in the 30-day window (tomorrow onwards)
 def scan_plant_dates(state, district, start_date, trip_load_tonnes):
     mandis = geo[(geo['state_name'] == state) & (geo['district_name'] == district)]['market_center_name'].unique()
     if len(mandis) == 0:
@@ -212,7 +216,7 @@ def best_per_variety(res):
     return picks
 
 # 6. Render UI
-res_all = scan_plant_dates(selected_state, selected_district, today, single_trip_tonnes)
+res_all = scan_plant_dates(selected_state, selected_district, plant_start, single_trip_tonnes)
 
 if res_all.empty:
     st.warning("No mandi data available for this district.")
@@ -244,7 +248,7 @@ else:
         f"<h3 style='margin: 0; color: #a3e635;'>🏆 Your Optimal Planting & Profit Recommendation</h3>"
         f"<p style='margin: 8px 0 0 0; font-size: 17px; color: #ffffff; line-height: 1.6;'>"
         f"For your <b>{acres} Acre</b> land (with <b>{seed_grams}g seeds</b>), your expected tomato harvest will be "
-        f"<b>~{total_expected_tonnes} Tonnes</b>. Looking at the nearest {SCAN_DAYS} days from today (<b>{today.strftime('%d-%b-%Y')}</b>):"
+        f"<b>~{total_expected_tonnes} Tonnes</b>. Looking at the next {SCAN_DAYS} days for planting (<b>{plant_start.strftime('%d-%b-%Y')}</b> to <b>{plant_end.strftime('%d-%b-%Y')}</b>, starting tomorrow):"
         f"</p>{points_html}"
         f"<p style='margin: 16px 0 0 0; font-size: 13px; color: #cbd5e1;'><i>Earning = harvest (Tonnes) x expected price. It is gross sales value, before seed, labour, transport and commission costs.</i></p>"
         f"</div>",
@@ -275,6 +279,9 @@ else:
         if live_data is not None and not live_data.empty:
             st.success("🟢 Connected to Live Agmarknet Government Feed (Today's Real Mandi Auctions)")
             st.dataframe(live_data, use_container_width=True)
+            st.divider()
+        else:
+            st.info("ℹ️ Live Agmarknet feed returned no tomato auctions for this district today (or the service is slow). Showing AI model predictions only.")
             st.divider()
 
     # Comparison Table & Chart: best planting date for every mandi x variety
